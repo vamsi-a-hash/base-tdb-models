@@ -40,28 +40,51 @@ class GraphModel:
 
         return cls(graph_id=graph_id, graph=g)
 
-    def save(self, conn: sqlite3.Connection, overwrite: bool = True) -> None:
+    def save(
+        self,
+        conn: sqlite3.Connection,
+        overwrite: bool = True,
+        *,
+        batch_size: int = 5000,
+    ) -> None:
         cur = conn.cursor()
 
+        def _flush(sql: str, rows) -> None:
+            batch = []
+            for row in rows:
+                batch.append(row)
+                if len(batch) >= batch_size:
+                    cur.execute("BEGIN")
+                    cur.executemany(sql, batch)
+                    conn.commit()
+                    batch = []
+            if batch:
+                cur.execute("BEGIN")
+                cur.executemany(sql, batch)
+                conn.commit()
+
         if overwrite:
+            cur.execute("BEGIN")
             cur.execute("DELETE FROM nodes WHERE graph_id = ?",
                         (self.graph_id,))
             cur.execute("DELETE FROM edges WHERE graph_id = ?",
                         (self.graph_id,))
+            conn.commit()
 
-        for node_id, attrs in self.graph.nodes(data=True):
-            cur.execute(
-                "INSERT INTO nodes (graph_id, node_id, attrs) VALUES (?, ?, ?)",
+        _flush(
+            "INSERT INTO nodes (graph_id, node_id, attrs) VALUES (?, ?, ?)",
+            (
                 (self.graph_id, str(node_id), json.dumps(attrs))
-            )
-
-        for src, dst, attrs in self.graph.edges(data=True):
-            cur.execute(
-                "INSERT INTO edges (graph_id, src, dst, attrs) VALUES (?, ?, ?, ?)",
+                for node_id, attrs in self.graph.nodes(data=True)
+            ),
+        )
+        _flush(
+            "INSERT INTO edges (graph_id, src, dst, attrs) VALUES (?, ?, ?, ?)",
+            (
                 (self.graph_id, str(src), str(dst), json.dumps(attrs))
-            )
-
-        conn.commit()
+                for src, dst, attrs in self.graph.edges(data=True)
+            ),
+        )
 
     def clear(self) -> None:
         self.graph.clear()
